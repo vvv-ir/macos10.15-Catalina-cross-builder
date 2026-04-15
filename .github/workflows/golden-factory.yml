@@ -1,4 +1,4 @@
-name: 🏭 Golden Toolchain Factory (V12 - The Manual Map)
+name: Golden_Toolchain_V13_Manual_Control
 
 on:
   push:
@@ -9,111 +9,95 @@ permissions:
   contents: write
 
 jobs:
-  build-golden:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 🗺️ Step 1 Unpack and Map the City
-        id: map
+      - name: 1_Deployment_and_Inspection
+        id: scout
         run: |
-          # Создаем четкую рабочую зону
+          # 1. Распаковка
           sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/toolchain
           
-          # РАЗВЕДКА: Находим, где реально лежат бинарники и SDK
-          # Мы ищем файл 'x86_64-apple-darwin19-clang' и берем его папку
-          COMPILER_PATH=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
-          REAL_BIN_DIR=$(dirname "$COMPILER_PATH")
+          # 2. ПОИСК ИСТИНЫ (Составляем карту)
+          echo "=== ОТЧЕТ ОБ ИНСПЕКЦИИ ==="
+          BIN_PATH=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
+          SDK_PATH=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
           
-          # Находим SDK
-          REAL_SDK_DIR=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
+          if [ -z "$BIN_PATH" ] || [ -z "$SDK_PATH" ]; then
+            echo "КРИТИЧЕСКАЯ ОШИБКА: Инструменты не найдены в /opt/toolchain"
+            exit 1
+          fi
           
-          echo "BIN_DIR=$REAL_BIN_DIR" >> $GITHUB_ENV
-          echo "SDK_DIR=$REAL_SDK_DIR" >> $GITHUB_ENV
-          echo "DEPS_DIR=/opt/toolchain/deps" >> $GITHUB_ENV
+          BIN_DIR=$(dirname "$BIN_PATH")
+          # Проверяем наличие errno.h, чтобы убедиться, что SDK не "пустышка"
+          ERRNO_H=$(sudo find "$SDK_PATH" -name "errno.h" | head -n 1)
           
-          # Выводим карту для отладки
-          echo "✅ Инструменты найдены в: $REAL_BIN_DIR"
-          echo "✅ SDK найден в: $REAL_SDK_DIR"
+          echo "КОМПИЛЯТОР: $BIN_PATH"
+          echo "SDK_ROOT: $SDK_PATH"
+          echo "ERRNO_H_FOUND: $ERRNO_H"
+          echo "=========================="
           
-          sudo mkdir -p /opt/toolchain/deps/include /opt/toolchain/deps/lib
+          # Экспортируем точные пути для следующих шагов
+          echo "X_BIN=$BIN_DIR" >> $GITHUB_ENV
+          echo "X_SDK=$SDK_PATH" >> $GITHUB_ENV
+          echo "X_TARGET=x86_64-apple-darwin19" >> $GITHUB_ENV
+          
+          sudo mkdir -p /opt/toolchain/deps
           sudo chown -R $USER:$USER /opt/toolchain
 
-      - name: 🔧 Install Host Tools
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config build-essential git
+      - name: 2_Verify_Compiler_Search_Paths
+        run: |
+          # Просим компилятор показать, где он ищет хедеры на самом деле
+          ${{ env.X_BIN }}/${{ env.X_TARGET }}-clang -target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -v -E - < /dev/null 2>&1 | grep -A 10 "search starts here"
 
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB (Без GPS, только хардкор)
-      # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build ZLIB
+      - name: 3_Build_ZLIB_Hard_Manual
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           cd zlib_src
           
-          # Забудь про CMake для Zlib, он слишком "умный". Юзаем старый добрый Makefile.
-          # Но конфигурируем его вручную через переменные окружения.
-          CHOST=x86_64-apple-darwin19 \
-          CC="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
-          AR="${{ env.BIN_DIR }}/x86_64-apple-darwin19-ar" \
-          RANLIB="${{ env.BIN_DIR }}/x86_64-apple-darwin19-ranlib" \
-          CFLAGS="-O3 -target x86_64-apple-darwin19 -isysroot ${{ env.SDK_DIR }} -mmacosx-version-min=10.13" \
-          ./configure --static --prefix=${{ env.DEPS_DIR }}
+          # Мы не верим ./configure, потому что он может ошибиться в тестах.
+          # Мы передаем всё в маке через переменные окружения и флаги.
+          
+          export CC="${{ env.X_BIN }}/${{ env.X_TARGET }}-clang"
+          export AR="${{ env.X_BIN }}/${{ env.X_TARGET }}-ar"
+          export RANLIB="${{ env.X_BIN }}/${{ env.X_TARGET }}-ranlib"
+          
+          # Ключевой момент: добавляем -isystem для принудительного включения инклудов SDK
+          export CFLAGS="-O3 -target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -isystem ${{ env.X_SDK }}/usr/include -mmacosx-version-min=10.13 -fPIC"
+          
+          # Запускаем конфиг, явно указав таргет. 
+          # Если конфиг упадет - мы увидим почему в логе.
+          ./configure --static --prefix=/opt/toolchain/deps
           
           make -j$(nproc)
           make install
 
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 3: LIBPNG (С четким указанием путей к Zlib)
-      # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build LIBPNG
+      - name: 4_Build_LIBPNG
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
-          # Здесь CMake нужен, но мы кормим его данными с ложечки
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
-            -DCMAKE_OSX_SYSROOT="${{ env.SDK_DIR }}" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="10.13" \
-            -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_DIR }}" \
+            -DCMAKE_C_COMPILER="${{ env.X_BIN }}/${{ env.X_TARGET }}-clang" \
+            -DCMAKE_C_FLAGS="-target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -isystem ${{ env.X_SDK }}/usr/include -mmacosx-version-min=10.13" \
+            -DCMAKE_INSTALL_PREFIX="/opt/toolchain/deps" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
-            -DZLIB_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
-            -DZLIB_LIBRARY="${{ env.DEPS_DIR }}/lib/libz.a"
+            -DZLIB_INCLUDE_DIR="/opt/toolchain/deps/include" \
+            -DZLIB_LIBRARY="/opt/toolchain/deps/lib/libz.a"
             
           make -j$(nproc) install
 
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 4: FREETYPE
-      # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build FREETYPE
-        run: |
-          git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
-          mkdir -p ft_src/build && cd ft_src/build
-          
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
-            -DCMAKE_OSX_SYSROOT="${{ env.SDK_DIR }}" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="10.13" \
-            -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_DIR }}" \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_DISABLE_FIND_PACKAGE_HarfBuzz=ON \
-            -DZLIB_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
-            -DZLIB_LIBRARY="${{ env.DEPS_DIR }}/lib/libz.a" \
-            -DPNG_PNG_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
-            -DPNG_LIBRARY="${{ env.DEPS_DIR }}/lib/libpng16.a"
-            
-          make -j$(nproc) install
-
-      - name: 📦 Pack Golden Image
+      - name: 5_Pack_and_Release
         run: |
           cd /opt/toolchain
-          tar -cJf ../osxcross-golden-v12.tar.xz .
-
-      - name: 🚀 Publish Release
+          tar -cJf ../osxcross-golden-v13.tar.xz .
+          
+      - name: 6_Publish
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v12.0
-          name: "Golden Toolchain V12 (The Map)"
-          files: /opt/osxcross-golden-v12.tar.xz
+          tag_name: golden-v13.0
+          name: "Golden Toolchain V13 (Hard Manual)"
+          files: /opt/osxcross-golden-v13.tar.xz
