@@ -1,7 +1,8 @@
-name: 🏭 Golden Toolchain Factory (V4 - Surgical Fix)
+name: 🏭 Golden Toolchain Factory (V7 - Back to Basics)
 
 on:
-  push: 
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -25,103 +26,81 @@ jobs:
           if [ -d "${{ env.OSXCROSS_ROOT }}/target" ]; then
             sudo mv ${{ env.OSXCROSS_ROOT }}/target/* ${{ env.OSXCROSS_ROOT }}/
           fi
-          
           sudo mkdir -p ${{ env.OSXCROSS_ROOT }}/deps
           sudo chown -R $USER:$USER ${{ env.OSXCROSS_ROOT }}
 
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: СОЗДАНИЕ УЛЬТИМАТИВНОГО ТУЛЧЕЙНА (Конспект: Фиксим Linker Leak)
-      # ════════════════════════════════════════════════════════════════════════
-      - name: 📝 Create Surgical Toolchain
-        run: |
-          cat <<EOF > ${{ env.OSXCROSS_ROOT }}/simple_toolchain.cmake
-          set(CMAKE_SYSTEM_NAME Darwin)
-          set(CMAKE_SYSTEM_PROCESSOR x86_64)
-          
-          # Указываем корень
-          set(OSXCROSS_ROOT ${{ env.OSXCROSS_ROOT }})
-          set(CMAKE_SYSROOT \${OSXCROSS_ROOT}/SDK/MacOSX10.15.sdk)
-          
-          # Жестко прописываем пути к инструментам (Чтобы не вызывался /usr/bin/ld)
-          set(CMAKE_C_COMPILER \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-clang)
-          set(CMAKE_CXX_COMPILER \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-clang++)
-          set(CMAKE_LINKER \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-ld CACHE FILEPATH "linker")
-          set(CMAKE_AR \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-ar CACHE FILEPATH "archive")
-          set(CMAKE_RANLIB \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-ranlib CACHE FILEPATH "ranlib")
-          set(CMAKE_NM \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-nm CACHE FILEPATH "nm")
-          set(CMAKE_STRIP \${OSXCROSS_ROOT}/bin/${{ env.TARGET_HOST }}-strip CACHE FILEPATH "strip")
-
-          # Настройки поиска (Изолируем "пузырь")
-          set(CMAKE_FIND_ROOT_PATH \${OSXCROSS_ROOT}/SDK/MacOSX10.15.sdk \${OSXCROSS_ROOT}/deps)
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-          
-          # Помогаем CMake пройти проверку компилятора
-          set(CMAKE_OSX_DEPLOYMENT_TARGET ${{ env.MACOS_MIN }})
-          set(CMAKE_C_FLAGS "-isysroot \${CMAKE_SYSROOT} -mmacosx-version-min=${{ env.MACOS_MIN }}")
-          set(CMAKE_CXX_FLAGS "-isysroot \${CMAKE_SYSROOT} -mmacosx-version-min=${{ env.MACOS_MIN }}")
-          EOF
-
-      - name: 🔧 Install Host Build Tools
+      - name: 🔧 Install Host Tools
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config build-essential git
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 3: СБОРКА ZLIB (С пропуском сломанных тестов CMake)
+      # ШАГ 2: ZLIB через классический Configure (Никакого CMake!)
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build ZLIB
+      - name: 📚 Build ZLIB (Classic Way)
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
-          mkdir -p zlib_src/build && cd zlib_src/build
+          cd zlib_src
           
-          # Мы добавляем -DCMAKE_C_COMPILER_WORKS=1, чтобы CMake не пытался запустить 
-          # тестовую программу, которая всё равно не запустится на Ubuntu.
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=${{ env.OSXCROSS_ROOT }}/simple_toolchain.cmake \
-            -DCMAKE_INSTALL_PREFIX=${{ env.OSXCROSS_ROOT }}/deps \
-            -DCMAKE_C_COMPILER_WORKS=1 \
-            -DCMAKE_CXX_COMPILER_WORKS=1 \
-            -DBUILD_SHARED_LIBS=OFF
+          # Указываем инструменты напрямую в переменные окружения
+          export CHOST=${{ env.TARGET_HOST }}
+          export CC="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang"
+          export AR="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ar"
+          export RANLIB="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ranlib"
+          export CFLAGS="-O3 -mmacosx-version-min=${{ env.MACOS_MIN }} -isysroot ${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk"
           
-          make -j$(nproc) install
+          # --static заставит собрать только libz.a и не трогать dylib
+          ./configure --prefix=${{ env.OSXCROSS_ROOT }}/deps --static
+          
+          make -j$(nproc)
+          make install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 4: LIBPNG
+      # ШАГ 3: LIBPNG (Используем наработки Zlib)
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build LIBPNG
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
-          mkdir -p png_src/build && cd png_src/build
+          cd png_src
+          # Здесь используем CMake, но с ВЫКЛЮЧЕННЫМ shared
+          mkdir build && cd build
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=${{ env.OSXCROSS_ROOT }}/simple_toolchain.cmake \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang \
+            -DCMAKE_OSX_SYSROOT=${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk \
             -DCMAKE_INSTALL_PREFIX=${{ env.OSXCROSS_ROOT }}/deps \
-            -DCMAKE_C_COMPILER_WORKS=1 \
-            -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
-            -DZLIB_ROOT=${{ env.OSXCROSS_ROOT }}/deps
+            -DPNG_SHARED=OFF \
+            -DPNG_TESTS=OFF \
+            -DZLIB_ROOT=${{ env.OSXCROSS_ROOT }}/deps \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }}
+          
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 5: FREETYPE
+      # ШАГ 4: FREETYPE
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build FREETYPE
         run: |
           git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
-          mkdir -p ft_src/build && cd ft_src/build
+          cd ft_src
+          mkdir build && cd build
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=${{ env.OSXCROSS_ROOT }}/simple_toolchain.cmake \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang \
+            -DCMAKE_OSX_SYSROOT=${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk \
             -DCMAKE_INSTALL_PREFIX=${{ env.OSXCROSS_ROOT }}/deps \
-            -DCMAKE_C_COMPILER_WORKS=1 \
-            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_PREFIX_PATH=${{ env.OSXCROSS_ROOT }}/deps \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }}
+          
           make -j$(nproc) install
 
       - name: 📦 Pack Golden Image
         run: |
           cd /opt
-          tar -cJf osxcross-golden-surgical.tar.xz osxcross/
+          tar -cJf osxcross-golden-final.tar.xz osxcross/
 
       - name: 🚀 Publish Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-surgical
-          name: "Golden Toolchain (Linker Fixed)"
-          files: /opt/osxcross-golden-surgical.tar.xz
+          tag_name: golden-v7.0
+          name: "Golden Toolchain V7 (Classic Zlib)"
+          files: /opt/osxcross-golden-final.tar.xz
