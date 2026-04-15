@@ -1,4 +1,4 @@
-name: Golden_Toolchain_V14_Manual_Audit
+name: Golden_Toolchain_V15_The_Surveyor
 
 on:
   push:
@@ -12,69 +12,75 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 01_Unpack_Toolchain
+      - name: 01_Unpack_and_Map
         run: |
           sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/toolchain
           
-          # Находим реальные точки входа
-          REAL_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
-          REAL_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
+          # Находим пути ногами, без предположений
+          export FOUND_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" -printf '%h' -quit)
+          export FOUND_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d -printf '%p' -quit)
           
-          echo "BIN_DIR=$(dirname $REAL_BIN)" >> $GITHUB_ENV
-          echo "SDK_DIR=$REAL_SDK" >> $GITHUB_ENV
-          echo "TARGET=x86_64-apple-darwin19" >> $GITHUB_ENV
+          echo "B_DIR=$FOUND_BIN" >> $GITHUB_ENV
+          echo "S_DIR=$FOUND_SDK" >> $GITHUB_ENV
+          echo "T_TRIP=x86_64-apple-darwin19" >> $GITHUB_ENV
           
           sudo chown -R $USER:$USER /opt/toolchain
 
-      - name: 02_Audit_SDK_Structure
+      - name: 02_Log_Full_Map
         run: |
-          echo "=== ПРОВЕРКА НАЛИЧИЯ СИСТЕМНЫХ ХЕДЕРОВ ==="
-          if [ -f "${{ env.SDK_DIR }}/usr/include/errno.h" ]; then
-            echo "✅ errno.h найден: ${{ env.SDK_DIR }}/usr/include/errno.h"
-          else
-            echo "❌ errno.h ОТСУТСТВУЕТ в SDK!"
-            find ${{ env.SDK_DIR }} -name "errno.h"
-          fi
-          
-          echo "=== ПУТИ ПОИСКА КОМПИЛЯТОРА ==="
-          ${{ env.BIN_DIR }}/${{ env.TARGET }}-clang -target ${{ env.TARGET }} -isysroot ${{ env.SDK_DIR }} -v -E - < /dev/null 2>&1 | grep -A 15 "search starts here"
+          echo "=== КАРТА ГОРОДА (BIN) ==="
+          ls -F ${{ env.B_DIR }} | head -n 20
+          echo "=== КАРТА ГОРОДА (SDK) ==="
+          ls -F ${{ env.S_DIR }}/usr/include | grep -E "errno|stdio|stdlib"
+          echo "=== ПРОВЕРКА ЛИНКОВЩИКА ==="
+          which ${{ env.B_DIR }}/${{ env.T_TRIP }}-ld
 
-      - name: 03_Build_ZLIB_Final_Manual
+      - name: 03_Build_ZLIB_Manual_Final
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           cd zlib_src
           
-          # Если компилятор не видит errno.h, мы укажем ему на /usr/include ВНУТРИ SDK принудительно.
-          # Также добавим флаг -D_LIBCPP_HAS_NO_ASAL_HEADERS, иногда помогающий при кросс-сборке.
+          # Устанавливаем пути
+          BIN="${{ env.B_DIR }}"
+          SDK="${{ env.S_DIR }}"
+          TRIP="${{ env.T_TRIP }}"
           
-          export CC="${{ env.BIN_DIR }}/${{ env.TARGET }}-clang"
-          export AR="${{ env.BIN_DIR }}/${{ env.TARGET }}-ar"
-          export RANLIB="${{ env.BIN_DIR }}/${{ env.TARGET }}-ranlib"
+          # Самое важное: 
+          # 1. Мы добавляем BIN в PATH, чтобы clang нашел правильный 'ld'
+          # 2. Мы используем -B, чтобы clang искал инструменты в нашей папке
+          # 3. Мы ПРОВЕРЯЕМ, что переменная SDK не пустая перед запуском
           
-          # Собираем флаги: 
-          # 1. -target и -isysroot (база)
-          # 2. -I и -isystem (принудительные пути к SDK)
-          # 3. -fPIC (обязательно для статики, которая пойдет в FFmpeg)
+          if [ -z "$SDK" ]; then echo "ОШИБКА: SDK не найден"; exit 1; fi
           
-          MY_CFLAGS="-O3 -target ${{ env.TARGET }} -isysroot ${{ env.X_SDK }} -I${{ env.SDK_DIR }}/usr/include -isystem ${{ env.SDK_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC"
+          export PATH="$BIN:$PATH"
           
-          CFLAGS="$MY_CFLAGS" ./configure --static --prefix=/opt/toolchain/deps
+          # Жесткие флаги
+          MY_CC="$BIN/$TRIP-clang"
+          MY_CFLAGS="-O3 -target $TRIP -isysroot $SDK -I$SDK/usr/include -isystem $SDK/usr/include -B$BIN -mmacosx-version-min=10.13 -fPIC"
           
-          # Собираем, явно пробрасывая CFLAGS в make, чтобы он не потерял их
-          make -j$(nproc) CFLAGS="$MY_CFLAGS"
+          CC="$MY_CC" \
+          AR="$BIN/$TRIP-ar" \
+          RANLIB="$BIN/$TRIP-ranlib" \
+          CFLAGS="$MY_CFLAGS" \
+          ./configure --static --prefix=/opt/toolchain/deps
+          
+          make -j$(nproc)
           make install
 
-      - name: 04_Build_LIBPNG_Manual
+      - name: 04_Build_LIBPNG_Manual_Final
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
+          # Включаем наш PATH для CMake
+          export PATH="${{ env.B_DIR }}:$PATH"
+          
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/${{ env.TARGET }}-clang" \
-            -DCMAKE_C_FLAGS="-target ${{ env.TARGET }} -isysroot ${{ env.SDK_DIR }} -I${{ env.SDK_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC" \
+            -DCMAKE_C_COMPILER="${{ env.B_DIR }}/${{ env.T_TRIP }}-clang" \
+            -DCMAKE_C_FLAGS="-target ${{ env.T_TRIP }} -isysroot ${{ env.S_DIR }} -B${{ env.B_DIR }} -I${{ env.S_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC" \
             -DCMAKE_INSTALL_PREFIX="/opt/toolchain/deps" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
             -DZLIB_INCLUDE_DIR="/opt/toolchain/deps/include" \
@@ -82,15 +88,14 @@ jobs:
             
           make -j$(nproc) install
 
-      - name: 05_Pack_Result
+      - name: 05_Pack_and_Release
         run: |
           cd /opt/toolchain
-          # Сохраняем и оригинальный тулчейн, и наши новые deps
-          tar -cJf ../osxcross-golden-v14.tar.xz .
+          tar -cJf ../osxcross-golden-v15.tar.xz .
           
       - name: 06_Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v14.0
-          name: "Golden Toolchain V14 (The Auditor)"
-          files: /opt/osxcross-golden-v14.tar.xz
+          tag_name: golden-v15.0
+          name: "Golden Toolchain V15 (The Surveyor)"
+          files: /opt/osxcross-golden-v15.tar.xz
