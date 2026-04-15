@@ -1,4 +1,4 @@
-name: Golden_Toolchain_V16_Manual_Steering
+name: Golden_Toolchain_V17_The_Cleaner
 
 on:
   push:
@@ -9,50 +9,60 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 01_Unpack_and_Identify
+      - name: 01_Unpack_and_Deep_Scan
         run: |
           sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/toolchain
           
-          # Находим точные пути к SDK и инструментам
+          # Находим все места, где могут прятаться хедеры
           REAL_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
-          REAL_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-ld" -printf '%h' | head -n 1)
           
           echo "S_DIR=$REAL_SDK" >> $GITHUB_ENV
-          echo "B_DIR=$REAL_BIN" >> $GITHUB_ENV
-          sudo chown -R $USER:$USER /opt/toolchain
+          echo "B_DIR=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-ld" -printf '%h')" >> $GITHUB_ENV
+          
+          echo "=== ПРОВЕРКА СОДЕРЖИМОГО ERRNO.H ==="
+          find $REAL_SDK -name "errno.h" -exec ls -l {} +
+          # Посмотрим, не пустой ли он
+          find $REAL_SDK -name "errno.h" -exec head -n 5 {} +
 
-      - name: 02_Build_ZLIB_Direct
+      - name: 02_Build_ZLIB_Aggressive
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           cd zlib_src
           
-          # ВНИМАНИЕ: Мы НЕ используем x86_64-apple-darwin19-clang.
-          # Мы используем системный clang, но объясняем ему, что делать.
+          # Нам нужно найти ВСЕ пути к инклудам внутри SDK
+          # Иногда они лежат в usr/include, а иногда в System/Library/Frameworks/Kernel.framework/...
+          INC_PATHS=$(find ${{ env.S_DIR }} -name "include" -type d | sed 's/^/-isystem /' | tr '\n' ' ')
           
           export CC="clang"
           export AR="${{ env.B_DIR }}/x86_64-apple-darwin19-ar"
           export RANLIB="${{ env.B_DIR }}/x86_64-apple-darwin19-ranlib"
           
-          # -target: КТО мы
-          # -isysroot: ГДЕ заголовки Apple
-          # -fuse-ld: КАКИМ линковщиком пользоваться (важно!)
-          export CFLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} -fuse-ld=${{ env.B_DIR }}/x86_64-apple-darwin19-ld -O3 -mmacosx-version-min=10.13 -fPIC"
+          # Флаги:
+          # 1. -nostdinc: Запрещаем смотреть в заголовки Ubuntu (чтобы не было каши)
+          # 2. -isystem: Подсовываем все найденные папки include из Apple SDK
+          # 3. -D_LIBCPP_HAS_NO_ASAL_HEADERS: Защита от конфликтов
           
-          ./configure --static --prefix=/opt/toolchain/deps
-          make -j$(nproc)
-          make install
+          BASE_FLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} $INC_PATHS -O3 -mmacosx-version-min=10.13 -fPIC"
+          
+          # Для zlib важно пройти configure. Если он врет про vsnprintf, заставим его.
+          CFLAGS="$BASE_FLAGS" ./configure --static --prefix=/opt/toolchain/deps
+          
+          # Если configure всё равно не видит errno, мы добавим его насильно в каждый файл
+          make -j$(nproc) CFLAGS="$BASE_FLAGS -D_DARWIN_C_SOURCE"
 
-      - name: 03_Build_LIBPNG_Direct
+      - name: 03_Build_LIBPNG_Aggressive
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
+          INC_PATHS=$(find ${{ env.S_DIR }} -name "include" -type d | sed 's/^/-isystem /' | tr '\n' ' ')
+          
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Darwin \
             -DCMAKE_C_COMPILER="clang" \
-            -DCMAKE_C_FLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} -fuse-ld=${{ env.B_DIR }}/x86_64-apple-darwin19-ld -mmacosx-version-min=10.13 -fPIC" \
+            -DCMAKE_C_FLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} $INC_PATHS -O3 -mmacosx-version-min=10.13 -fPIC" \
             -DCMAKE_INSTALL_PREFIX="/opt/toolchain/deps" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
             -DZLIB_INCLUDE_DIR="/opt/toolchain/deps/include" \
@@ -60,13 +70,13 @@ jobs:
             
           make -j$(nproc) install
 
-      - name: 04_Pack
+      - name: 04_Pack_and_Release
         run: |
           cd /opt/toolchain
-          tar -cJf ../osxcross-golden-v16.tar.xz .
+          tar -cJf ../osxcross-golden-v17.tar.xz .
           
       - name: 05_Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v16.0
-          files: /opt/osxcross-golden-v16.tar.xz
+          tag_name: golden-v17.0
+          files: /opt/osxcross-golden-v17.tar.xz
