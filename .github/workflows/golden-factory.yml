@@ -1,86 +1,58 @@
-name: Golden_Toolchain_V15_The_Surveyor
+name: Golden_Toolchain_V16_Manual_Steering
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 01_Unpack_and_Map
+      - name: 01_Unpack_and_Identify
         run: |
           sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/toolchain
           
-          # Находим пути ногами, без предположений
-          export FOUND_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" -printf '%h' -quit)
-          export FOUND_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d -printf '%p' -quit)
+          # Находим точные пути к SDK и инструментам
+          REAL_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
+          REAL_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-ld" -printf '%h' | head -n 1)
           
-          echo "B_DIR=$FOUND_BIN" >> $GITHUB_ENV
-          echo "S_DIR=$FOUND_SDK" >> $GITHUB_ENV
-          echo "T_TRIP=x86_64-apple-darwin19" >> $GITHUB_ENV
-          
+          echo "S_DIR=$REAL_SDK" >> $GITHUB_ENV
+          echo "B_DIR=$REAL_BIN" >> $GITHUB_ENV
           sudo chown -R $USER:$USER /opt/toolchain
 
-      - name: 02_Log_Full_Map
-        run: |
-          echo "=== КАРТА ГОРОДА (BIN) ==="
-          ls -F ${{ env.B_DIR }} | head -n 20
-          echo "=== КАРТА ГОРОДА (SDK) ==="
-          ls -F ${{ env.S_DIR }}/usr/include | grep -E "errno|stdio|stdlib"
-          echo "=== ПРОВЕРКА ЛИНКОВЩИКА ==="
-          which ${{ env.B_DIR }}/${{ env.T_TRIP }}-ld
-
-      - name: 03_Build_ZLIB_Manual_Final
+      - name: 02_Build_ZLIB_Direct
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           cd zlib_src
           
-          # Устанавливаем пути
-          BIN="${{ env.B_DIR }}"
-          SDK="${{ env.S_DIR }}"
-          TRIP="${{ env.T_TRIP }}"
+          # ВНИМАНИЕ: Мы НЕ используем x86_64-apple-darwin19-clang.
+          # Мы используем системный clang, но объясняем ему, что делать.
           
-          # Самое важное: 
-          # 1. Мы добавляем BIN в PATH, чтобы clang нашел правильный 'ld'
-          # 2. Мы используем -B, чтобы clang искал инструменты в нашей папке
-          # 3. Мы ПРОВЕРЯЕМ, что переменная SDK не пустая перед запуском
+          export CC="clang"
+          export AR="${{ env.B_DIR }}/x86_64-apple-darwin19-ar"
+          export RANLIB="${{ env.B_DIR }}/x86_64-apple-darwin19-ranlib"
           
-          if [ -z "$SDK" ]; then echo "ОШИБКА: SDK не найден"; exit 1; fi
+          # -target: КТО мы
+          # -isysroot: ГДЕ заголовки Apple
+          # -fuse-ld: КАКИМ линковщиком пользоваться (важно!)
+          export CFLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} -fuse-ld=${{ env.B_DIR }}/x86_64-apple-darwin19-ld -O3 -mmacosx-version-min=10.13 -fPIC"
           
-          export PATH="$BIN:$PATH"
-          
-          # Жесткие флаги
-          MY_CC="$BIN/$TRIP-clang"
-          MY_CFLAGS="-O3 -target $TRIP -isysroot $SDK -I$SDK/usr/include -isystem $SDK/usr/include -B$BIN -mmacosx-version-min=10.13 -fPIC"
-          
-          CC="$MY_CC" \
-          AR="$BIN/$TRIP-ar" \
-          RANLIB="$BIN/$TRIP-ranlib" \
-          CFLAGS="$MY_CFLAGS" \
           ./configure --static --prefix=/opt/toolchain/deps
-          
           make -j$(nproc)
           make install
 
-      - name: 04_Build_LIBPNG_Manual_Final
+      - name: 03_Build_LIBPNG_Direct
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
-          # Включаем наш PATH для CMake
-          export PATH="${{ env.B_DIR }}:$PATH"
-          
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER="${{ env.B_DIR }}/${{ env.T_TRIP }}-clang" \
-            -DCMAKE_C_FLAGS="-target ${{ env.T_TRIP }} -isysroot ${{ env.S_DIR }} -B${{ env.B_DIR }} -I${{ env.S_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC" \
+            -DCMAKE_C_COMPILER="clang" \
+            -DCMAKE_C_FLAGS="-target x86_64-apple-darwin19 -isysroot ${{ env.S_DIR }} -fuse-ld=${{ env.B_DIR }}/x86_64-apple-darwin19-ld -mmacosx-version-min=10.13 -fPIC" \
             -DCMAKE_INSTALL_PREFIX="/opt/toolchain/deps" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
             -DZLIB_INCLUDE_DIR="/opt/toolchain/deps/include" \
@@ -88,14 +60,13 @@ jobs:
             
           make -j$(nproc) install
 
-      - name: 05_Pack_and_Release
+      - name: 04_Pack
         run: |
           cd /opt/toolchain
-          tar -cJf ../osxcross-golden-v15.tar.xz .
+          tar -cJf ../osxcross-golden-v16.tar.xz .
           
-      - name: 06_Release
+      - name: 05_Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v15.0
-          name: "Golden Toolchain V15 (The Surveyor)"
-          files: /opt/osxcross-golden-v15.tar.xz
+          tag_name: golden-v16.0
+          files: /opt/osxcross-golden-v16.tar.xz
