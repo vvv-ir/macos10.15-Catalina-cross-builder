@@ -8,43 +8,63 @@ permissions:
   contents: write
 
 env:
-  OSXCROSS_URL: "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz"
+  # Основные пути
   OSXCROSS_ROOT: "/opt/osxcross"
-  DEPS_DIR: "/opt/osxcross/deps"
+  OSXCROSS_TARGET_DIR: "/opt/osxcross" # Фикс ошибки "Cannot determine OSXCROSS_TARGET_DIR"
+  OSXCROSS_HOST: "x86_64-apple-darwin19"
+  OSXCROSS_SDK_DIR: "/opt/osxcross/SDK"
+  OSXCROSS_SDK: "/opt/osxcross/SDK/MacOSX10.15.sdk"
+  
+  # Пути для CMake
   TOOLCHAIN_FILE: "/opt/osxcross/toolchain.cmake"
-  TARGET_HOST: "x86_64-apple-darwin19"
+  DEPS_DIR: "/opt/osxcross/deps"
   MACOS_MIN: "10.13"
 
 jobs:
   build-golden:
     runs-on: ubuntu-22.04
+    # Глобальные переменные для всех шагов, чтобы компилятор не терялся
+    env:
+      PATH: /opt/osxcross/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+
     steps:
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 1: Разворачиваем Базу (Osxcross)
-      # ════════════════════════════════════════════════════════════════════════
       - name: 🚀 Deploy Base Toolchain
         run: |
           sudo mkdir -p ${{ env.OSXCROSS_ROOT }}
-          curl -L ${{ env.OSXCROSS_URL }} | sudo tar -xJ -C ${{ env.OSXCROSS_ROOT }} --strip-components=1
+          curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
+               | sudo tar -xJ -C ${{ env.OSXCROSS_ROOT }} --strip-components=1
           sudo mkdir -p ${{ env.DEPS_DIR }}
           sudo chown -R $USER:$USER ${{ env.OSXCROSS_ROOT }}
+          
+          # Проверка: есть ли компилятор на месте?
+          if [ ! -f "${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang" ]; then
+            echo "❌ Компилятор не найден в ${{ env.OSXCROSS_ROOT }}/bin"
+            exit 1
+          fi
 
       - name: 🔧 Install Host Tools
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config
+        run: |
+          sudo apt-get update
+          # Добавляем build-essential для уверенности в наличии make
+          sudo apt-get install -y cmake pkg-config build-essential git
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB (Теперь через CMake — никаких падений тестов!)
+      # ШАГ 2: ZLIB (Используем ПРЯМЫЕ пути к компилятору, игнорируя капризы тулчейна)
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build ZLIB (CMake)
+      - name: 📚 Build ZLIB
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           mkdir -p zlib_src/build && cd zlib_src/build
           
+          # Мы не просто даем файл тулчейна, мы ПРИНУДИТЕЛЬНО указываем компиляторы
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
+            -DOSXCROSS_HOST=${{ env.OSXCROSS_HOST }} \
             -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang \
+            -DCMAKE_CXX_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang++ \
             -DBUILD_SHARED_LIBS=OFF
             
           make -j$(nproc) install
@@ -52,34 +72,36 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       # ШАГ 3: LIBPNG
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build LIBPNG (CMake)
+      - name: 📚 Build LIBPNG
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
             -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
-            -DZLIB_ROOT=${{ env.DEPS_DIR }}
+            -DZLIB_ROOT=${{ env.DEPS_DIR }} \
+            -DZLIB_INCLUDE_DIR=${{ env.DEPS_DIR }}/include \
+            -DZLIB_LIBRARY=${{ env.DEPS_DIR }}/lib/libz.a
             
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
       # ШАГ 4: FREETYPE
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build FREETYPE (CMake)
+      - name: 📚 Build FREETYPE
         run: |
           git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
           mkdir -p ft_src/build && cd ft_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
             -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_PREFIX_PATH=${{ env.DEPS_DIR }}
             
@@ -88,34 +110,28 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       # ШАГ 5: OPENJPEG
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build OPENJPEG (CMake)
+      - name: 📚 Build OPENJPEG
         run: |
           git clone --depth 1 https://github.com/uclouvain/openjpeg.git jp_src
           mkdir -p jp_src/build && cd jp_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
             -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
+            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.OSXCROSS_HOST }}-clang \
             -DBUILD_SHARED_LIBS=OFF
             
           make -j$(nproc) install
 
-      # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 6: Упаковка и Релиз "Золотого Универсала"
-      # ════════════════════════════════════════════════════════════════════════
       - name: 📦 Pack Golden Image
         run: |
           cd /opt
           tar -cJf osxcross-golden-10.13.tar.xz osxcross/
 
-      - name: 🚀 Publish Golden Release
+      - name: 🚀 Publish Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v1.0
-          name: "Golden Toolchain (High Sierra Base)"
-          body: |
-            Пакет "Все включено". 
-            Включает компилятор Osxcross и собранные библиотеки в папке `deps/`.
+          tag_name: golden-v1.1
+          name: "Golden Toolchain v1.1"
           files: /opt/osxcross-golden-10.13.tar.xz
