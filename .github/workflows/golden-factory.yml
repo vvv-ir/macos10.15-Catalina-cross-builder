@@ -1,4 +1,4 @@
-name: 🏭 Golden Toolchain Factory (V7 - Back to Basics)
+name: 🏭 Golden Toolchain Factory (V8 - The True Path)
 
 on:
   push:
@@ -8,70 +8,70 @@ on:
 permissions:
   contents: write
 
-env:
-  OSXCROSS_ROOT: "/opt/osxcross"
-  TARGET_HOST: "x86_64-apple-darwin19"
-  MACOS_MIN: "10.13"
-
 jobs:
   build-golden:
     runs-on: ubuntu-22.04
     steps:
-      - name: 🚀 Deploy & Normalize Toolchain
+      - name: 🚀 Deploy Toolchain
         run: |
-          sudo mkdir -p ${{ env.OSXCROSS_ROOT }}
+          # 1. Разворачиваем архив с сохранением нужной структуры
+          sudo mkdir -p /opt/osxcross
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
-               | sudo tar -xJ -C ${{ env.OSXCROSS_ROOT }}
+               | sudo tar -xJ -C /opt/osxcross --strip-components=1
           
-          if [ -d "${{ env.OSXCROSS_ROOT }}/target" ]; then
-            sudo mv ${{ env.OSXCROSS_ROOT }}/target/* ${{ env.OSXCROSS_ROOT }}/
-          fi
-          sudo mkdir -p ${{ env.OSXCROSS_ROOT }}/deps
-          sudo chown -R $USER:$USER ${{ env.OSXCROSS_ROOT }}
+          # 2. Создаем "золотое хранилище"
+          sudo mkdir -p /opt/osxcross/deps
+          sudo chown -R $USER:$USER /opt/osxcross
 
       - name: 🔧 Install Host Tools
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config build-essential git
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB через классический Configure (Никакого CMake!)
+      # ШАГ 2: ZLIB (Статика + Обход сломанного make install)
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build ZLIB (Classic Way)
+      - name: 📚 Build ZLIB (Static Only)
         run: |
+          # КРИТИЧНО: Явно прописываем PATH, чтобы CMake и clang нашли Apple Linker
+          export PATH="/opt/osxcross/bin:$PATH"
+          export OSXCROSS_HOST="x86_64-apple-darwin19"
+          export MACOSX_DEPLOYMENT_TARGET="10.13"
+          
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
-          cd zlib_src
+          mkdir -p zlib_src/build && cd zlib_src/build
           
-          # Указываем инструменты напрямую в переменные окружения
-          export CHOST=${{ env.TARGET_HOST }}
-          export CC="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang"
-          export AR="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ar"
-          export RANLIB="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ranlib"
-          export CFLAGS="-O3 -mmacosx-version-min=${{ env.MACOS_MIN }} -isysroot ${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk"
+          # Используем штатный тулчейн (теперь он отработает, так как есть PATH)
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=/opt/osxcross/toolchain.cmake \
+            -DCMAKE_INSTALL_PREFIX=/opt/osxcross/deps
           
-          # --static заставит собрать только libz.a и не трогать dylib
-          ./configure --prefix=${{ env.OSXCROSS_ROOT }}/deps --static
+          # ХИТРОСТЬ: Собираем ТОЛЬКО статическую либу! 
+          # Это предотвращает попытку собрать .dylib и ошибку '-dynamic'
+          make zlibstatic
           
-          make -j$(nproc)
-          make install
+          # Вручную кладем "золото" на полку (вместо сломанного make install)
+          mkdir -p /opt/osxcross/deps/lib /opt/osxcross/deps/include
+          cp libz.a /opt/osxcross/deps/lib/
+          cp zconf.h /opt/osxcross/deps/include/
+          cp ../zlib.h /opt/osxcross/deps/include/
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 3: LIBPNG (Используем наработки Zlib)
+      # ШАГ 3: LIBPNG
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build LIBPNG
         run: |
-          git clone --depth 1 https://github.com/glennrp/libpng.git png_src
-          cd png_src
-          # Здесь используем CMake, но с ВЫКЛЮЧЕННЫМ shared
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang \
-            -DCMAKE_OSX_SYSROOT=${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk \
-            -DCMAKE_INSTALL_PREFIX=${{ env.OSXCROSS_ROOT }}/deps \
-            -DPNG_SHARED=OFF \
-            -DPNG_TESTS=OFF \
-            -DZLIB_ROOT=${{ env.OSXCROSS_ROOT }}/deps \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }}
+          export PATH="/opt/osxcross/bin:$PATH"
+          export OSXCROSS_HOST="x86_64-apple-darwin19"
+          export MACOSX_DEPLOYMENT_TARGET="10.13"
           
+          git clone --depth 1 https://github.com/glennrp/libpng.git png_src
+          mkdir -p png_src/build && cd png_src/build
+          
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=/opt/osxcross/toolchain.cmake \
+            -DCMAKE_INSTALL_PREFIX=/opt/osxcross/deps \
+            -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
+            -DZLIB_ROOT=/opt/osxcross/deps
+            
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
@@ -79,28 +79,29 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build FREETYPE
         run: |
-          git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
-          cd ft_src
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER=${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang \
-            -DCMAKE_OSX_SYSROOT=${{ env.OSXCROSS_ROOT }}/SDK/MacOSX10.15.sdk \
-            -DCMAKE_INSTALL_PREFIX=${{ env.OSXCROSS_ROOT }}/deps \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_PREFIX_PATH=${{ env.OSXCROSS_ROOT }}/deps \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }}
+          export PATH="/opt/osxcross/bin:$PATH"
+          export OSXCROSS_HOST="x86_64-apple-darwin19"
+          export MACOSX_DEPLOYMENT_TARGET="10.13"
           
+          git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
+          mkdir -p ft_src/build && cd ft_src/build
+          
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=/opt/osxcross/toolchain.cmake \
+            -DCMAKE_INSTALL_PREFIX=/opt/osxcross/deps \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_PREFIX_PATH=/opt/osxcross/deps
+            
           make -j$(nproc) install
 
       - name: 📦 Pack Golden Image
         run: |
           cd /opt
-          tar -cJf osxcross-golden-final.tar.xz osxcross/
+          tar -cJf osxcross-golden-v8.tar.xz osxcross/
 
       - name: 🚀 Publish Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v7.0
-          name: "Golden Toolchain V7 (Classic Zlib)"
-          files: /opt/osxcross-golden-final.tar.xz
+          tag_name: golden-v8.0
+          name: "Golden Toolchain V8"
+          files: /opt/osxcross-golden-v8.tar.xz
