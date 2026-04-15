@@ -1,4 +1,4 @@
-name: 🏭 Golden Toolchain Factory (V11 - Hard Manual)
+name: 🏭 Golden Toolchain Factory (V12 - The Manual Map)
 
 on:
   push:
@@ -8,79 +8,78 @@ on:
 permissions:
   contents: write
 
-env:
-  # Четкие абсолютные пути
-  BASE_DIR: "/opt/osxcross"
-  # После нормальной распаковки всё будет здесь:
-  SDK_DIR: "/opt/osxcross/SDK/MacOSX10.15.sdk"
-  BIN_DIR: "/opt/osxcross/bin"
-  DEPS_DIR: "/opt/osxcross/deps"
-  TARGET: "x86_64-apple-darwin19"
-  MACOS_MIN: "10.13"
-
 jobs:
   build-golden:
     runs-on: ubuntu-22.04
     steps:
-      - name: 🚀 Deploy Toolchain (Fixing Structure)
+      - name: 🗺️ Step 1: Unpack and Map the City
+        id: map
         run: |
-          sudo mkdir -p ${{ env.BASE_DIR }}
-          # Распаковываем БЕЗ strip-components, чтобы сохранить структуру target/
+          # Создаем четкую рабочую зону
+          sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
-               | sudo tar -xJ -C /opt
+               | sudo tar -xJ -C /opt/toolchain
           
-          # Теперь гарантированно: бинарники в /opt/osxcross/bin, SDK в /opt/osxcross/SDK
-          sudo mkdir -p ${{ env.DEPS_DIR }}
-          sudo chown -R $USER:$USER ${{ env.BASE_DIR }}
+          # РАЗВЕДКА: Находим, где реально лежат бинарники и SDK
+          # Мы ищем файл 'x86_64-apple-darwin19-clang' и берем его папку
+          COMPILER_PATH=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
+          REAL_BIN_DIR=$(dirname "$COMPILER_PATH")
+          
+          # Находим SDK
+          REAL_SDK_DIR=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
+          
+          echo "BIN_DIR=$REAL_BIN_DIR" >> $GITHUB_ENV
+          echo "SDK_DIR=$REAL_SDK_DIR" >> $GITHUB_ENV
+          echo "DEPS_DIR=/opt/toolchain/deps" >> $GITHUB_ENV
+          
+          # Выводим карту для отладки
+          echo "✅ Инструменты найдены в: $REAL_BIN_DIR"
+          echo "✅ SDK найден в: $REAL_SDK_DIR"
+          
+          sudo mkdir -p /opt/toolchain/deps/include /opt/toolchain/deps/lib
+          sudo chown -R $USER:$USER /opt/toolchain
 
       - name: 🔧 Install Host Tools
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config build-essential git
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB (Полностью ручные флаги, игнорируем врапперы)
+      # ШАГ 2: ZLIB (Без GPS, только хардкор)
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build ZLIB
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
-          mkdir -p zlib_src/build && cd zlib_src/build
+          cd zlib_src
           
-          # Мы не используем toolchain.cmake. Мы всё пишем руками.
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Generic \
-            -DCMAKE_C_COMPILER=${{ env.BIN_DIR }}/${{ env.TARGET }}-clang \
-            -DCMAKE_C_FLAGS="-target ${{ env.TARGET }} --sysroot=${{ env.SDK_DIR }} -mmacosx-version-min=${{ env.MACOS_MIN }}" \
-            -DCMAKE_AR=${{ env.BIN_DIR }}/${{ env.TARGET }}-ar \
-            -DCMAKE_RANLIB=${{ env.BIN_DIR }}/${{ env.TARGET }}-ranlib \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
-            -DBUILD_SHARED_LIBS=OFF
+          # Забудь про CMake для Zlib, он слишком "умный". Юзаем старый добрый Makefile.
+          # Но конфигурируем его вручную через переменные окружения.
+          CHOST=x86_64-apple-darwin19 \
+          CC="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
+          AR="${{ env.BIN_DIR }}/x86_64-apple-darwin19-ar" \
+          RANLIB="${{ env.BIN_DIR }}/x86_64-apple-darwin19-ranlib" \
+          CFLAGS="-O3 -target x86_64-apple-darwin19 -isysroot ${{ env.SDK_DIR }} -mmacosx-version-min=10.13" \
+          ./configure --static --prefix=${{ env.DEPS_DIR }}
           
-          make -j$(nproc) zlibstatic
-          
-          # Ручная инсталляция, чтобы не зависеть от логики 'make install'
-          mkdir -p ${{ env.DEPS_DIR }}/lib ${{ env.DEPS_DIR }}/include
-          cp libz.a ${{ env.DEPS_DIR }}/lib/
-          cp zconf.h ${{ env.DEPS_DIR }}/include/
-          cp ../zlib.h ${{ env.DEPS_DIR }}/include/
+          make -j$(nproc)
+          make install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 3: LIBPNG
+      # ШАГ 3: LIBPNG (С четким указанием путей к Zlib)
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build LIBPNG
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
+          # Здесь CMake нужен, но мы кормим его данными с ложечки
           cmake .. \
-            -DCMAKE_SYSTEM_NAME=Generic \
-            -DCMAKE_C_COMPILER=${{ env.BIN_DIR }}/${{ env.TARGET }}-clang \
-            -DCMAKE_C_FLAGS="-target ${{ env.TARGET }} --sysroot=${{ env.SDK_DIR }} -mmacosx-version-min=${{ env.MACOS_MIN }} -I${{ env.DEPS_DIR }}/include" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L${{ env.DEPS_DIR }}/lib" \
-            -DCMAKE_AR=${{ env.BIN_DIR }}/${{ env.TARGET }}-ar \
-            -DCMAKE_RANLIB=${{ env.BIN_DIR }}/${{ env.TARGET }}-ranlib \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
+            -DCMAKE_OSX_SYSROOT="${{ env.SDK_DIR }}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="10.13" \
+            -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_DIR }}" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
-            -DZLIB_LIBRARY=${{ env.DEPS_DIR }}/lib/libz.a \
-            -DZLIB_INCLUDE_DIR=${{ env.DEPS_DIR }}/include
+            -DZLIB_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
+            -DZLIB_LIBRARY="${{ env.DEPS_DIR }}/lib/libz.a"
             
           make -j$(nproc) install
 
@@ -93,29 +92,28 @@ jobs:
           mkdir -p ft_src/build && cd ft_src/build
           
           cmake .. \
-            -DCMAKE_SYSTEM_NAME=Generic \
-            -DCMAKE_C_COMPILER=${{ env.BIN_DIR }}/${{ env.TARGET }}-clang \
-            -DCMAKE_C_FLAGS="-target ${{ env.TARGET }} --sysroot=${{ env.SDK_DIR }} -mmacosx-version-min=${{ env.MACOS_MIN }} -I${{ env.DEPS_DIR }}/include" \
-            -DCMAKE_AR=${{ env.BIN_DIR }}/${{ env.TARGET }}-ar \
-            -DCMAKE_RANLIB=${{ env.BIN_DIR }}/${{ env.TARGET }}-ranlib \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/x86_64-apple-darwin19-clang" \
+            -DCMAKE_OSX_SYSROOT="${{ env.SDK_DIR }}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="10.13" \
+            -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_DIR }}" \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_DISABLE_FIND_PACKAGE_HarfBuzz=ON \
-            -DZLIB_LIBRARY=${{ env.DEPS_DIR }}/lib/libz.a \
-            -DZLIB_INCLUDE_DIR=${{ env.DEPS_DIR }}/include \
-            -DPNG_LIBRARY=${{ env.DEPS_DIR }}/lib/libpng16.a \
-            -DPNG_PNG_INCLUDE_DIR=${{ env.DEPS_DIR }}/include
+            -DZLIB_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
+            -DZLIB_LIBRARY="${{ env.DEPS_DIR }}/lib/libz.a" \
+            -DPNG_PNG_INCLUDE_DIR="${{ env.DEPS_DIR }}/include" \
+            -DPNG_LIBRARY="${{ env.DEPS_DIR }}/lib/libpng16.a"
             
           make -j$(nproc) install
 
       - name: 📦 Pack Golden Image
         run: |
-          cd /opt
-          tar -cJf osxcross-golden-v11.tar.xz osxcross/
+          cd /opt/toolchain
+          tar -cJf ../osxcross-golden-v12.tar.xz .
 
       - name: 🚀 Publish Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v11.0
-          name: "Golden Toolchain V11 (Zero Hope)"
-          files: /opt/osxcross-golden-v11.tar.xz
+          tag_name: golden-v12.0
+          name: "Golden Toolchain V12 (The Map)"
+          files: /opt/osxcross-golden-v12.tar.xz
