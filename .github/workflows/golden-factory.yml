@@ -1,4 +1,4 @@
-name: Golden_Toolchain_V13_Manual_Control
+name: Golden_Toolchain_V14_Manual_Audit
 
 on:
   push:
@@ -12,77 +12,69 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1_Deployment_and_Inspection
-        id: scout
+      - name: 01_Unpack_Toolchain
         run: |
-          # 1. Распаковка
           sudo mkdir -p /opt/toolchain
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/toolchain
           
-          # 2. ПОИСК ИСТИНЫ (Составляем карту)
-          echo "=== ОТЧЕТ ОБ ИНСПЕКЦИИ ==="
-          BIN_PATH=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
-          SDK_PATH=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
+          # Находим реальные точки входа
+          REAL_BIN=$(sudo find /opt/toolchain -name "x86_64-apple-darwin19-clang" | head -n 1)
+          REAL_SDK=$(sudo find /opt/toolchain -name "MacOSX10.15.sdk" -type d | head -n 1)
           
-          if [ -z "$BIN_PATH" ] || [ -z "$SDK_PATH" ]; then
-            echo "КРИТИЧЕСКАЯ ОШИБКА: Инструменты не найдены в /opt/toolchain"
-            exit 1
-          fi
+          echo "BIN_DIR=$(dirname $REAL_BIN)" >> $GITHUB_ENV
+          echo "SDK_DIR=$REAL_SDK" >> $GITHUB_ENV
+          echo "TARGET=x86_64-apple-darwin19" >> $GITHUB_ENV
           
-          BIN_DIR=$(dirname "$BIN_PATH")
-          # Проверяем наличие errno.h, чтобы убедиться, что SDK не "пустышка"
-          ERRNO_H=$(sudo find "$SDK_PATH" -name "errno.h" | head -n 1)
-          
-          echo "КОМПИЛЯТОР: $BIN_PATH"
-          echo "SDK_ROOT: $SDK_PATH"
-          echo "ERRNO_H_FOUND: $ERRNO_H"
-          echo "=========================="
-          
-          # Экспортируем точные пути для следующих шагов
-          echo "X_BIN=$BIN_DIR" >> $GITHUB_ENV
-          echo "X_SDK=$SDK_PATH" >> $GITHUB_ENV
-          echo "X_TARGET=x86_64-apple-darwin19" >> $GITHUB_ENV
-          
-          sudo mkdir -p /opt/toolchain/deps
           sudo chown -R $USER:$USER /opt/toolchain
 
-      - name: 2_Verify_Compiler_Search_Paths
+      - name: 02_Audit_SDK_Structure
         run: |
-          # Просим компилятор показать, где он ищет хедеры на самом деле
-          ${{ env.X_BIN }}/${{ env.X_TARGET }}-clang -target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -v -E - < /dev/null 2>&1 | grep -A 10 "search starts here"
+          echo "=== ПРОВЕРКА НАЛИЧИЯ СИСТЕМНЫХ ХЕДЕРОВ ==="
+          if [ -f "${{ env.SDK_DIR }}/usr/include/errno.h" ]; then
+            echo "✅ errno.h найден: ${{ env.SDK_DIR }}/usr/include/errno.h"
+          else
+            echo "❌ errno.h ОТСУТСТВУЕТ в SDK!"
+            find ${{ env.SDK_DIR }} -name "errno.h"
+          fi
+          
+          echo "=== ПУТИ ПОИСКА КОМПИЛЯТОРА ==="
+          ${{ env.BIN_DIR }}/${{ env.TARGET }}-clang -target ${{ env.TARGET }} -isysroot ${{ env.SDK_DIR }} -v -E - < /dev/null 2>&1 | grep -A 15 "search starts here"
 
-      - name: 3_Build_ZLIB_Hard_Manual
+      - name: 03_Build_ZLIB_Final_Manual
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           cd zlib_src
           
-          # Мы не верим ./configure, потому что он может ошибиться в тестах.
-          # Мы передаем всё в маке через переменные окружения и флаги.
+          # Если компилятор не видит errno.h, мы укажем ему на /usr/include ВНУТРИ SDK принудительно.
+          # Также добавим флаг -D_LIBCPP_HAS_NO_ASAL_HEADERS, иногда помогающий при кросс-сборке.
           
-          export CC="${{ env.X_BIN }}/${{ env.X_TARGET }}-clang"
-          export AR="${{ env.X_BIN }}/${{ env.X_TARGET }}-ar"
-          export RANLIB="${{ env.X_BIN }}/${{ env.X_TARGET }}-ranlib"
+          export CC="${{ env.BIN_DIR }}/${{ env.TARGET }}-clang"
+          export AR="${{ env.BIN_DIR }}/${{ env.TARGET }}-ar"
+          export RANLIB="${{ env.BIN_DIR }}/${{ env.TARGET }}-ranlib"
           
-          # Ключевой момент: добавляем -isystem для принудительного включения инклудов SDK
-          export CFLAGS="-O3 -target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -isystem ${{ env.X_SDK }}/usr/include -mmacosx-version-min=10.13 -fPIC"
+          # Собираем флаги: 
+          # 1. -target и -isysroot (база)
+          # 2. -I и -isystem (принудительные пути к SDK)
+          # 3. -fPIC (обязательно для статики, которая пойдет в FFmpeg)
           
-          # Запускаем конфиг, явно указав таргет. 
-          # Если конфиг упадет - мы увидим почему в логе.
-          ./configure --static --prefix=/opt/toolchain/deps
+          MY_CFLAGS="-O3 -target ${{ env.TARGET }} -isysroot ${{ env.X_SDK }} -I${{ env.SDK_DIR }}/usr/include -isystem ${{ env.SDK_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC"
           
-          make -j$(nproc)
+          CFLAGS="$MY_CFLAGS" ./configure --static --prefix=/opt/toolchain/deps
+          
+          # Собираем, явно пробрасывая CFLAGS в make, чтобы он не потерял их
+          make -j$(nproc) CFLAGS="$MY_CFLAGS"
           make install
 
-      - name: 4_Build_LIBPNG
+      - name: 04_Build_LIBPNG_Manual
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_C_COMPILER="${{ env.X_BIN }}/${{ env.X_TARGET }}-clang" \
-            -DCMAKE_C_FLAGS="-target ${{ env.X_TARGET }} -isysroot ${{ env.X_SDK }} -isystem ${{ env.X_SDK }}/usr/include -mmacosx-version-min=10.13" \
+            -DCMAKE_C_COMPILER="${{ env.BIN_DIR }}/${{ env.TARGET }}-clang" \
+            -DCMAKE_C_FLAGS="-target ${{ env.TARGET }} -isysroot ${{ env.SDK_DIR }} -I${{ env.SDK_DIR }}/usr/include -mmacosx-version-min=10.13 -fPIC" \
             -DCMAKE_INSTALL_PREFIX="/opt/toolchain/deps" \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
             -DZLIB_INCLUDE_DIR="/opt/toolchain/deps/include" \
@@ -90,14 +82,15 @@ jobs:
             
           make -j$(nproc) install
 
-      - name: 5_Pack_and_Release
+      - name: 05_Pack_Result
         run: |
           cd /opt/toolchain
-          tar -cJf ../osxcross-golden-v13.tar.xz .
+          # Сохраняем и оригинальный тулчейн, и наши новые deps
+          tar -cJf ../osxcross-golden-v14.tar.xz .
           
-      - name: 6_Publish
+      - name: 06_Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v13.0
-          name: "Golden Toolchain V13 (Hard Manual)"
-          files: /opt/osxcross-golden-v13.tar.xz
+          tag_name: golden-v14.0
+          name: "Golden Toolchain V14 (The Auditor)"
+          files: /opt/osxcross-golden-v14.tar.xz
