@@ -3,6 +3,9 @@ name: Build_Real_OSXCROSS
 on:
   workflow_dispatch: # Запускается кнопкой "Run workflow" вручную
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
