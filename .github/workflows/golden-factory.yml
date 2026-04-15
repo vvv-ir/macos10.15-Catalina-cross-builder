@@ -1,37 +1,26 @@
-# ╔════════════════════════════════════════════════════════════════════════╗
-# ║                   GOLDEN TOOLCHAIN FACTORY (Sandbox)                 ║
-# ║                                                                        ║
-# ║ Этот скрипт собирает изолированную среду с зависимостями.            ║
-# ║ Никаких линуксовых путей. Никаких догадок компилятора.               ║
-# ╚════════════════════════════════════════════════════════════════════════╝
-
 name: 🏭 Golden Toolchain Factory (High Sierra)
 
 on:
   push: 
-  workflow_dispatch: # Запускаем вручную, когда нужно обновить зависимости
+  workflow_dispatch:
 
 permissions:
-  contents: write # Право на загрузку готового архива в релизы
+  contents: write
 
 env:
-  # === ЖЕСТКИЕ ПУТИ ПУЗЫРЯ (THE SANDBOX) ===
   OSXCROSS_URL: "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz"
   OSXCROSS_ROOT: "/opt/osxcross"
-  DEPS_DIR: "/opt/osxcross/deps" # Здесь будут жить наши либы
-  SDK_PATH: "/opt/osxcross/SDK/MacOSX10.15.sdk"
+  DEPS_DIR: "/opt/osxcross/deps"
   TOOLCHAIN_FILE: "/opt/osxcross/toolchain.cmake"
-  
-  # === ПАРАМЕТРЫ СИСТЕМЫ ===
   TARGET_HOST: "x86_64-apple-darwin19"
   MACOS_MIN: "10.13"
 
 jobs:
-  build-golden-image:
+  build-golden:
     runs-on: ubuntu-22.04
     steps:
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 1: Разворачиваем Базу и Изолируем среду
+      # ШАГ 1: Разворачиваем Базу (Osxcross)
       # ════════════════════════════════════════════════════════════════════════
       - name: 🚀 Deploy Base Toolchain
         run: |
@@ -44,91 +33,89 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB (Побеждаем ошибку errno.h через -isysroot)
+      # ШАГ 2: ZLIB (Теперь через CMake — никаких падений тестов!)
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build ZLIB (Sandboxed)
+      - name: 📚 Build ZLIB (CMake)
         run: |
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
-          cd zlib_src
+          mkdir -p zlib_src/build && cd zlib_src/build
           
-          # ПРИНУДИТЕЛЬНАЯ ИЗОЛЯЦИЯ: Мы бьем ./configure по рукам флагом -isysroot
-          export CFLAGS="-isysroot ${{ env.SDK_PATH }} -mmacosx-version-min=${{ env.MACOS_MIN }}"
-          export CC="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-clang"
-          export AR="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ar"
-          export RANLIB="${{ env.OSXCROSS_ROOT }}/bin/${{ env.TARGET_HOST }}-ranlib"
-          
-          CHOST=${{ env.TARGET_HOST }} ./configure --prefix=${{ env.DEPS_DIR }} --static
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
+            -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
+            -DBUILD_SHARED_LIBS=OFF
+            
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
       # ШАГ 3: LIBPNG
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build LIBPNG
+      - name: 📚 Build LIBPNG (CMake)
         run: |
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
-            -DCMAKE_C_FLAGS="-isysroot ${{ env.SDK_PATH }} -mmacosx-version-min=${{ env.MACOS_MIN }}" \
+            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
             -DPNG_SHARED=OFF -DPNG_TESTS=OFF \
             -DZLIB_ROOT=${{ env.DEPS_DIR }}
-          
+            
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 4: FREETYPE (Критичен для текста в PDF)
+      # ШАГ 4: FREETYPE
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build FREETYPE
+      - name: 📚 Build FREETYPE (CMake)
         run: |
           git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
           mkdir -p ft_src/build && cd ft_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
-            -DCMAKE_C_FLAGS="-isysroot ${{ env.SDK_PATH }} -mmacosx-version-min=${{ env.MACOS_MIN }}" \
+            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_PREFIX_PATH=${{ env.DEPS_DIR }}
-          
+            
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 5: OPENJPEG (Для картинок внутри PDF)
+      # ШАГ 5: OPENJPEG
       # ════════════════════════════════════════════════════════════════════════
-      - name: 📚 Build OPENJPEG
+      - name: 📚 Build OPENJPEG (CMake)
         run: |
           git clone --depth 1 https://github.com/uclouvain/openjpeg.git jp_src
           mkdir -p jp_src/build && cd jp_src/build
           
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.TOOLCHAIN_FILE }} \
-            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
             -DOSXCROSS_HOST=${{ env.TARGET_HOST }} \
-            -DCMAKE_C_FLAGS="-isysroot ${{ env.SDK_PATH }} -mmacosx-version-min=${{ env.MACOS_MIN }}" \
+            -DCMAKE_INSTALL_PREFIX=${{ env.DEPS_DIR }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN }} \
             -DBUILD_SHARED_LIBS=OFF
-          
+            
           make -j$(nproc) install
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 6: Запаковка Золотого Образца
+      # ШАГ 6: Упаковка и Релиз "Золотого Универсала"
       # ════════════════════════════════════════════════════════════════════════
       - name: 📦 Pack Golden Image
         run: |
           cd /opt
-          # Пакуем ВСЮ папку osxcross (Компилятор + SDK + Наши собранные либы в deps/)
           tar -cJf osxcross-golden-10.13.tar.xz osxcross/
 
       - name: 🚀 Publish Golden Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: golden-v1.0
-          name: "Golden Toolchain (High Sierra + Poppler Deps)"
+          name: "Golden Toolchain (High Sierra Base)"
           body: |
-            Изолированная среда сборки.
-            Включает скомпилированные статические либы: Zlib, Libpng, Freetype, OpenJPEG.
-            Готово к мгновенной сборке Poppler.
+            Пакет "Все включено". 
+            Включает компилятор Osxcross и собранные библиотеки в папке `deps/`.
           files: /opt/osxcross-golden-10.13.tar.xz
