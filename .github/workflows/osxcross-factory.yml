@@ -1,0 +1,93 @@
+# ╔════════════════════════════════════════════════════════════════════════╗
+# ║                    OSXCROSS UNIVERSAL FACTORY                        ║
+# ║                                                                        ║
+# ║  Этот workflow запускается ВРУЧНУЮ. Он собирает "толстый" компилятор ║
+# ║  с поддержкой C++17/20 (для Blender/Poppler) и сам кладет его в      ║
+# ║  раздел Releases.                                                    ║
+# ╚════════════════════════════════════════════════════════════════════════╝
+
+name: 🛠️ Universal Osxcross Factory
+
+on:
+  workflow_dispatch: # Только ручной запуск
+
+permissions:
+  contents: write # Право на создание релиза (The Guard)
+
+env:
+  SDK_VERSION: "10.15"
+  MACOS_MIN_VER: "10.13"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    steps:
+      # ════════════════════════════════════════════════════════════════════════
+      # ШАГ 1: Подготовка сборочного окружения
+      # ════════════════════════════════════════════════════════════════════════
+      - name: 🔧 Install Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake llvm-dev libxml2-dev uuid-dev \
+            libssl-dev libbz2-dev zlib1g-dev \
+            lzma-dev liblzma-dev wget curl tar \
+            patch make xz-utils gcc g++
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ШАГ 2: Клонирование и загрузка SDK
+      # ════════════════════════════════════════════════════════════════════════
+      - name: 📥 Checkout & Get SDK
+        run: |
+          # Клонируем оригинальный osxcross
+          git clone https://github.com/tpoechtrager/osxcross.git osxcross
+          mkdir -p osxcross/tarballs
+          
+          # Скачиваем SDK 10.15 (Идеальный баланс для High Sierra и нового C++)
+          wget -q https://github.com/joseluisq/macosx-sdks/releases/download/${{ env.SDK_VERSION }}/MacOSX${{ env.SDK_VERSION }}.sdk.tar.xz \
+            -O osxcross/tarballs/MacOSX${{ env.SDK_VERSION }}.sdk.tar.xz
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ШАГ 3: Сборка "Толстого" Тулчейна (Секретный соус для Blender)
+      # ════════════════════════════════════════════════════════════════════════
+      - name: 🏗️ Build Fat SDK & Compiler
+        run: |
+          cd osxcross
+          
+          # THE GUARD: Включаем критически важные компоненты для С++
+          export ENABLE_COMPILER_RT_INSTALL=1  # Нужно для builtin_available
+          export OSX_VERSION_MIN=${{ env.MACOS_MIN_VER }}
+          export UNATTENDED=1
+          export CC=clang
+          export CXX=clang++
+          
+          ./build.sh 2>&1 | tail -50
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ШАГ 4: Упаковка готового инструмента
+      # ════════════════════════════════════════════════════════════════════════
+      - name: 📦 Pack Universal Archive
+        run: |
+          cd osxcross
+          # Запаковываем только папку target (в ней лежит весь компилятор)
+          # Используем '.' чтобы файлы распаковывались без корневой папки
+          tar -cJf osxcross-universal-${{ env.MACOS_MIN_VER }}.tar.xz -C target .
+
+      # ════════════════════════════════════════════════════════════════════════
+      # ШАГ 5: Публикация в GitHub Releases
+      # ════════════════════════════════════════════════════════════════════════
+      - name: 🚀 Publish to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: toolchain-v1.0
+          name: "Universal Osxcross (High Sierra 10.13)"
+          body: |
+            Готовый кросс-компилятор для Linux-раннеров.
+            - **SDK**: 10.15 (Поддерживает C++17/20)
+            - **Target**: 10.13 (High Sierra)
+            - **Особенности**: Включен Compiler-RT и нативная libc++.
+            
+            Идеально для сборки: FFmpeg, Poppler, Blender.
+          files: osxcross/osxcross-universal-${{ env.MACOS_MIN_VER }}.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
