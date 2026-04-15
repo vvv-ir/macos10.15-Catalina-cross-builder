@@ -12,7 +12,7 @@ jobs:
   build-golden:
     runs-on: ubuntu-22.04
     steps:
-      - name: 🗺️ Step 1: Unpack and Map the City
+      - name: 🗺️ Step 1 Unpack and Map the City
         id: map
         run: |
           # Создаем четкую рабочую зону
