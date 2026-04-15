@@ -1,4 +1,4 @@
-name: 🏭 Golden Toolchain Factory (V8 - The True Path)
+name: 🏭 Golden Toolchain Factory (V9 - Target Dir Fix)
 
 on:
   push:
@@ -8,18 +8,28 @@ on:
 permissions:
   contents: write
 
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (Решают 99% проблем с путями)
+env:
+  OSXCROSS_ROOT: "/opt/osxcross"
+  # ВОТ ОНА - строчка, которая лечит ошибку "Cannot determine OSXCROSS_TARGET_DIR"
+  OSXCROSS_TARGET_DIR: "/opt/osxcross" 
+  OSXCROSS_HOST: "x86_64-apple-darwin19"
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
+
 jobs:
   build-golden:
     runs-on: ubuntu-22.04
+    env:
+      # Прописываем PATH глобально для всей Job! Линковщик теперь точно не потеряется.
+      PATH: /opt/osxcross/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      
     steps:
       - name: 🚀 Deploy Toolchain
         run: |
-          # 1. Разворачиваем архив с сохранением нужной структуры
           sudo mkdir -p /opt/osxcross
           curl -L "https://github.com/vvv-ir/macos10.15-Catalina-cross-builder/releases/download/toolchain-v1.0/osxcross-universal-10.13.tar.xz" \
                | sudo tar -xJ -C /opt/osxcross --strip-components=1
           
-          # 2. Создаем "золотое хранилище"
           sudo mkdir -p /opt/osxcross/deps
           sudo chown -R $USER:$USER /opt/osxcross
 
@@ -27,28 +37,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake pkg-config build-essential git
 
       # ════════════════════════════════════════════════════════════════════════
-      # ШАГ 2: ZLIB (Статика + Обход сломанного make install)
+      # ШАГ 2: ZLIB (Хитрая сборка только статики)
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build ZLIB (Static Only)
         run: |
-          # КРИТИЧНО: Явно прописываем PATH, чтобы CMake и clang нашли Apple Linker
-          export PATH="/opt/osxcross/bin:$PATH"
-          export OSXCROSS_HOST="x86_64-apple-darwin19"
-          export MACOSX_DEPLOYMENT_TARGET="10.13"
-          
           git clone --depth 1 https://github.com/madler/zlib.git zlib_src
           mkdir -p zlib_src/build && cd zlib_src/build
           
-          # Используем штатный тулчейн (теперь он отработает, так как есть PATH)
+          # Тулчейн теперь сработает, так как OSXCROSS_TARGET_DIR задан глобально
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=/opt/osxcross/toolchain.cmake \
             -DCMAKE_INSTALL_PREFIX=/opt/osxcross/deps
           
-          # ХИТРОСТЬ: Собираем ТОЛЬКО статическую либу! 
-          # Это предотвращает попытку собрать .dylib и ошибку '-dynamic'
+          # Собираем ТОЛЬКО статическую либу, игнорируя динамическую
           make zlibstatic
           
-          # Вручную кладем "золото" на полку (вместо сломанного make install)
+          # Копируем результаты руками
           mkdir -p /opt/osxcross/deps/lib /opt/osxcross/deps/include
           cp libz.a /opt/osxcross/deps/lib/
           cp zconf.h /opt/osxcross/deps/include/
@@ -59,10 +63,6 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build LIBPNG
         run: |
-          export PATH="/opt/osxcross/bin:$PATH"
-          export OSXCROSS_HOST="x86_64-apple-darwin19"
-          export MACOSX_DEPLOYMENT_TARGET="10.13"
-          
           git clone --depth 1 https://github.com/glennrp/libpng.git png_src
           mkdir -p png_src/build && cd png_src/build
           
@@ -79,10 +79,6 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       - name: 📚 Build FREETYPE
         run: |
-          export PATH="/opt/osxcross/bin:$PATH"
-          export OSXCROSS_HOST="x86_64-apple-darwin19"
-          export MACOSX_DEPLOYMENT_TARGET="10.13"
-          
           git clone --depth 1 https://gitlab.freedesktop.org/freetype/freetype.git ft_src
           mkdir -p ft_src/build && cd ft_src/build
           
@@ -97,11 +93,11 @@ jobs:
       - name: 📦 Pack Golden Image
         run: |
           cd /opt
-          tar -cJf osxcross-golden-v8.tar.xz osxcross/
+          tar -cJf osxcross-golden-v9.tar.xz osxcross/
 
       - name: 🚀 Publish Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: golden-v8.0
-          name: "Golden Toolchain V8"
-          files: /opt/osxcross-golden-v8.tar.xz
+          tag_name: golden-v9.0
+          name: "Golden Toolchain V9"
+          files: /opt/osxcross-golden-v9.tar.xz
