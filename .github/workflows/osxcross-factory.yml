@@ -45,23 +45,29 @@ jobs:
           echo "Размер получившегося тулчейна:"
           du -sh target/
 
-      - name: 04_Deep_Research_Size
-        run: |
-          echo "=== ГДЕ ПРЯЧЕТСЯ ВЕС? ==="
-          du -sh /opt/toolchain/target/* | sort -h
-          
-          echo "=== ПРОВЕРКА ХЕДЕРОВ (СУЩЕСТВУЮТ ЛИ ОНИ?) ==="
-          find /opt/toolchain/target -name "errno.h" -exec ls -lh {} +
-          
-          echo "=== ПРОВЕРКА КОМПИЛЯТОРА ==="
-          /opt/toolchain/target/bin/x86_64-apple-darwin19-clang --version
+    
       
-      - name: 05_Package_for_Release
+      - name: 05_Package_for_Release_FAT_VERSION
         run: |
-          cd osxcross/target
-          # Упаковываем ВСЁ содержимое папки target. 
-          # Это займет пару минут, xz жмет сильно.
-          tar -cJf ../../osxcross-universal-10.15-FULL.tar.xz .
+          # 1. Переходим в папку с результатом сборки
+          cd ${{ github.workspace }}/osxcross/target
+          
+          # 2. ПРОВЕРКА: Если здесь пусто, билд упадет прямо тут
+          ls -R include | head -n 20 
+          
+          # 3. Упаковка с флагом -h (DEREFERENCE)
+          # Этот флаг превращает все ссылки в реальные файлы. 
+          # Архив станет тяжелее, но "честнее".
+          tar -chf ../osxcross-fat.tar .
+          
+          # 4. Сжимаем (не на максимум, чтобы видеть реальный объем)
+          xz -1 ../osxcross-fat.tar
+          
+          mv ../osxcross-fat.tar.xz ../../osxcross-universal-10.15-FULL.tar.xz
+
+      - name: 06_Final_Check_Size
+        run: |
+          ls -lh osxcross-universal-10.15-FULL.tar.xz
 
       - name: 06_Create_Release
         uses: softprops/action-gh-release@v1
