@@ -1,4 +1,4 @@
-name: Build_Real_OSXCROSS
+  name: Build_Real_OSXCROSS
 
 on:
   workflow_dispatch: # Запускается кнопкой "Run workflow" вручную
@@ -45,6 +45,17 @@ jobs:
           echo "Размер получившегося тулчейна:"
           du -sh target/
 
+      - name: 04_Deep_Research_Size
+        run: |
+          echo "=== ГДЕ ПРЯЧЕТСЯ ВЕС? ==="
+          du -sh /opt/toolchain/target/* | sort -h
+          
+          echo "=== ПРОВЕРКА ХЕДЕРОВ (СУЩЕСТВУЮТ ЛИ ОНИ?) ==="
+          find /opt/toolchain/target -name "errno.h" -exec ls -lh {} +
+          
+          echo "=== ПРОВЕРКА КОМПИЛЯТОРА ==="
+          /opt/toolchain/target/bin/x86_64-apple-darwin19-clang --version
+      
       - name: 05_Package_for_Release
         run: |
           cd osxcross/target
